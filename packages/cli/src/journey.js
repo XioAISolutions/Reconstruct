@@ -5,7 +5,7 @@ import { atomicWriteFile, createStagingDirectory, readJsonFile, sha256 } from ".
 import { assertAllowedUrl, createRequestGuard } from "./security.js";
 import { createJourneyArtifactWriter, summarizeAccessibility } from "./journey-artifacts.js";
 import { auditAccessibility } from "./journey-a11y.js";
-import { compactText, roundJourneyScore, routeOf, stepDescription } from "./journey-report.js";
+import { compactText, renderJourneyCorrections, renderJourneyReport, roundJourneyScore, routeOf, stepDescription } from "./journey-report.js";
 import { assertJourneyLocation, executeJourneyStep } from "./journey-runtime.js";
 import { safeJourneyStep, validateJourney } from "./journey-schema.js";
 import { RECONSTRUCT_VERSION } from "./version.js";
@@ -182,6 +182,8 @@ export async function runJourney(journeyFile, candidateBaseUrl, outDir, options 
 
     await writeTracked("journey.json", `${JSON.stringify(result, null, 2)}\n`);
     await writeTracked("accessibility.json", `${JSON.stringify({ audits }, null, 2)}\n`);
+    await writeTracked("JOURNEY_REPORT.md", renderJourneyReport(result));
+    await writeTracked("JOURNEY_CORRECTIONS.md", renderJourneyCorrections(result));
     const manifest = {
       version: 1,
       algorithm: "sha256",
