@@ -85,7 +85,7 @@ test("replays responsive interaction journeys and reports broken behavior", asyn
       timeoutMs: 10_000,
       executablePath: process.env.RECONSTRUCT_CHROMIUM_EXECUTABLE_PATH
     });
-    assert.equal(passing.passed, true);
+    assert.equal(passing.passed, true, JSON.stringify(passing, null, 2));
     assert.equal(passing.stats.failedSteps, 0);
     assert.equal(passing.checkpoints.length, 2);
     assert.ok(passing.accessibility.score >= 80);
