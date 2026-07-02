@@ -2,7 +2,30 @@
 
 All notable changes to this project are documented here.
 
-## 0.3.0 - Unreleased
+## 0.4.0 - Unreleased
+
+### Added
+
+- `evaluate` command with `compare` alias
+- candidate route rendering against verified AppSpec evidence
+- bounded visual similarity scoring and route-level heatmaps
+- observable structure scoring for titles, headings, links, buttons, forms, landmarks, and design tokens
+- recorded navigation-flow verification
+- overall and per-route pass/fail thresholds
+- `evaluation.json`, `REPORT.md`, `CORRECTION_PLAN.md`, and `AGENT_FIX_PROMPT.md`
+- content-addressed evaluation manifests
+- evaluator unit and real Chromium integration coverage
+
+### Security
+
+- source evidence is verified before evaluation begins
+- candidate URLs use the existing public/private network guard and request ceiling
+- downloads, popups, dialogs, service workers, and WebSockets remain restricted
+- candidate content remains untrusted evidence and is never executed as agent instructions
+- evaluation manifests record the AppSpec digest rather than a local filesystem path
+- Chromium sandbox remains enabled in application code and CI
+
+## 0.3.0 - 2026-07-02
 
 ### Added
 
