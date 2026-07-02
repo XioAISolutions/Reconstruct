@@ -4,19 +4,23 @@
 
 Reconstruct captures observable product evidence, converts it into a provider-neutral `AppSpec`, and exports focused implementation packages for Cursor, Claude Code, Codex, and other coding agents.
 
-> Observe → Specify → Build → Compare → Correct
+> Observe → Map → Specify → Build → Compare → Correct
 
-## Security-first design
+## What changed in 0.3
 
-- public-network capture by default; private, loopback, link-local, metadata, multicast, and special-use destinations are denied
-- every browser request is revalidated and bounded
-- isolated browser context with downloads and service workers disabled
-- output projects are staged, hashed, and atomically committed
-- existing directories are never silently overwritten
-- captured page text is treated as untrusted data, not agent instructions
-- AppSpec validation rejects unsafe paths, duplicate IDs, malformed hashes, excessive nesting, and prototype-pollution keys
+Reconstruct can now map an application rather than stopping at one page:
 
-Application checks reduce risk but do not replace infrastructure isolation for hosted deployments. Read [SECURITY.md](SECURITY.md), [the threat model](docs/THREAT_MODEL.md), and [deployment controls](docs/DEPLOYMENT.md).
+- same-origin breadth-first crawling
+- configurable page, depth, request, delay, HTML, and screenshot limits
+- route normalization and tracking-parameter removal
+- static-asset and external-origin filtering
+- one evidence bundle per captured screen
+- shared-component detection across routes
+- observed navigation flows with source, trigger, and target
+- `evidence/route-graph.json`
+- `SITE_MAP.md` and `ROUTE_GRAPH.json` in agent exports
+
+Single-page capture remains available and backward compatible.
 
 ## Quick start
 
@@ -26,60 +30,103 @@ Requirements: Node.js 20.19–24 and npm 10 or newer.
 npm ci
 npx playwright install chromium
 npm run build
-
-npm run reconstruct -- capture https://example.com --out ./example-reconstruction
-npm run reconstruct -- validate ./example-reconstruction/appspec.json
-npm run reconstruct -- verify ./example-reconstruction/appspec.json
-npm run reconstruct -- export ./example-reconstruction/appspec.json --target cursor
 ```
 
-The output directory must not already exist.
-
-## Capture controls
+Capture one page:
 
 ```bash
-npm run reconstruct -- capture https://example.com \
-  --out ./example-reconstruction \
-  --timeout 30000 \
-  --max-requests 300 \
-  --max-html-bytes 2000000 \
-  --max-page-height 12000
+npm run reconstruct -- capture https://example.com --out ./example-page
 ```
 
-`--allow-private-network` exists only for explicit, authorized local testing. Never expose it in a public or multi-tenant service.
+Map an application:
+
+```bash
+npm run reconstruct -- crawl https://example.com \
+  --out ./example-app \
+  --max-pages 20 \
+  --max-depth 3 \
+  --crawl-delay 250
+```
+
+Validate and verify:
+
+```bash
+npm run reconstruct -- validate ./example-app/appspec.json
+npm run reconstruct -- verify ./example-app/appspec.json
+```
+
+Export for a coding agent:
+
+```bash
+npm run reconstruct -- export ./example-app/appspec.json --target cursor
+npm run reconstruct -- export ./example-app/appspec.json --target claude
+npm run reconstruct -- export ./example-app/appspec.json --target codex
+```
+
+## Crawl behaviour
+
+The crawler is intentionally conservative:
+
+- it follows only HTTP(S) links on the first successfully loaded page's origin
+- it removes fragments and common tracking parameters
+- it ignores common static-file extensions
+- it does not submit forms or click arbitrary buttons
+- it does not cross origins
+- it captures sequentially rather than flooding the target
+- it records pages that fail after the first successful page
+- it stops at configured page, depth, request, and time limits
+
+Query strings are ignored by default to prevent infinite route expansion. Use `--include-query` when query parameters genuinely represent distinct application states.
+
+Read [docs/CRAWLING.md](docs/CRAWLING.md) before increasing limits or operating a hosted service.
 
 ## Output
 
 ```text
-example-reconstruction/
+example-app/
 ├── appspec.json
 └── evidence/
     ├── manifest.json
+    ├── route-graph.json
     ├── pages/
     │   ├── home.html
-    │   └── home.json
+    │   ├── home.json
+    │   └── pricing-xxxxxxxx.json
     └── screenshots/
-        └── home.png
+        ├── home.png
+        └── pricing-xxxxxxxx.png
 ```
 
-Each evidence reference includes a SHA-256 digest and byte size. Run `verify` to check the manifest and artifact contents before trusting or exporting a project. The AppSpec records capture limits, request counts, truncation, assumptions, and unknowns.
+Every evidence artifact is content-addressed with a SHA-256 digest and byte count. `verify` checks the AppSpec, manifest, file type, file size, and digest before an export is generated.
 
-## Agent exports
+## Agent export package
 
-Targets:
+Every export now contains:
 
-- `cursor`
-- `claude`
-- `codex`
-- `markdown`
+- `appspec.json`
+- `PRODUCT.md`
+- `SITE_MAP.md`
+- `ROUTE_GRAPH.json`
+- `ARCHITECTURE.md`
+- `DESIGN_SYSTEM.md`
+- `IMPLEMENTATION_PLAN.md`
+- `ACCEPTANCE_TESTS.md`
+- `UNTRUSTED_EVIDENCE.md`
+- target-specific agent instructions
+- `RECONSTRUCT_MANIFEST.json`
 
-Each export includes:
+## Security-first design
 
-- the validated `appspec.json`
-- product, architecture, design-system, implementation, and acceptance-test documents
-- an explicit untrusted-evidence boundary
-- a SHA-256 export manifest
-- target-specific agent instructions where applicable
+- public-network capture by default
+- private, loopback, link-local, metadata, multicast, reserved, and special-use destinations denied
+- browser requests revalidated and bounded
+- Chromium sandbox, TLS verification, and CSP enforcement remain enabled
+- downloads, service workers, popups, dialogs, WebSockets, and media resources restricted
+- output written through restrictive staging directories and atomic commits
+- captured page content treated as untrusted evidence, never trusted agent instructions
+- AppSpec validation rejects unsafe paths, duplicate IDs, malformed hashes, excessive nesting, and prototype-pollution keys
+
+Application checks reduce risk but do not replace worker-level network isolation in a hosted deployment. Read [SECURITY.md](SECURITY.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Development
 
@@ -87,16 +134,15 @@ Each export includes:
 npm run verify
 npx playwright install chromium
 npm run test:integration
+npm audit --audit-level=high
 ```
-
-Operational guidance: [repository settings](docs/REPOSITORY_SETTINGS.md) and [hosted operations](docs/OPERATIONS.md).
 
 Repository layout:
 
 ```text
 packages/
 ├── appspec/    # schema, validation, serialization
-└── cli/        # network guard, capture, exports, CLI
+└── cli/        # network guard, crawl, capture, exports, CLI
 ```
 
 ## Scope
