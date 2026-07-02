@@ -2,11 +2,13 @@
 
 import { dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
-import { AppSpecValidationError, APP_SPEC_VERSION, validateAppSpec } from "@reconstruct/appspec";
+import { AppSpecValidationError, validateAppSpec } from "@reconstruct/appspec";
 import { capturePublicApp, capturePublicPage } from "./capture.js";
+import { evaluateCandidate } from "./evaluate.js";
 import { EXPORT_TARGETS, exportAppSpec } from "./export.js";
 import { readJsonFile, UserInputError } from "./fs.js";
 import { verifyAppSpecProject } from "./integrity.js";
+import { RECONSTRUCT_VERSION } from "./version.js";
 
 process.umask(0o077);
 
@@ -14,6 +16,14 @@ function integerOption(min, max) {
   return (value) => {
     const parsed = Number(value);
     if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new InvalidArgumentError(`must be an integer between ${min} and ${max}`);
+    return parsed;
+  };
+}
+
+function numberOption(min, max) {
+  return (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) throw new InvalidArgumentError(`must be a number between ${min} and ${max}`);
     return parsed;
   };
 }
@@ -41,8 +51,8 @@ function addCommonCaptureOptions(command, { crawl = false } = {}) {
 const program = new Command();
 program
   .name("reconstruct")
-  .description("Capture a web application and generate a hardened, build-ready AppSpec")
-  .version(APP_SPEC_VERSION)
+  .description("Capture, specify, evaluate, and correct observable web applications")
+  .version(RECONSTRUCT_VERSION)
   .showSuggestionAfterError()
   .showHelpAfterError();
 
@@ -140,6 +150,50 @@ program.command("export")
     const outDir = resolve(options.out || join(dirname(filePath), "exports", options.target));
     const written = await exportAppSpec(spec, options.target, outDir);
     printResult({ ok: true, command: "export", target: options.target, outDir, files: written, lines: [`Exported ${written.length} files to ${outDir}`] }, options.json);
+  });
+
+program.command("evaluate")
+  .alias("compare")
+  .description("Render a candidate application, score it against verified evidence, and generate corrections")
+  .argument("<file>", "AppSpec JSON file")
+  .requiredOption("-c, --candidate <url>", "candidate application base URL")
+  .option("-o, --out <directory>", "new evaluation output directory")
+  .option("--min-score <score>", "minimum passing score", numberOption(0, 100), 85)
+  .option("--pixel-threshold <value>", "per-channel mismatch threshold", integerOption(0, 255), 32)
+  .option("--max-compare-pixels <count>", "maximum pixels analyzed per route", integerOption(100_000, 25_000_000), 12_000_000)
+  .option("--timeout <milliseconds>", "navigation timeout per route", integerOption(1_000, 120_000), 30_000)
+  .option("--max-requests <count>", "maximum browser requests across evaluation", integerOption(1, 20_000), 2_000)
+  .option("--allow-private-network", "allow loopback and private-network candidate URLs", false)
+  .option("--json", "emit machine-readable output", false)
+  .action(async (file, options) => {
+    const filePath = resolve(file);
+    const outDir = resolve(options.out || join(dirname(filePath), "evaluation"));
+    const result = await evaluateCandidate(filePath, options.candidate, outDir, {
+      minScore: options.minScore,
+      pixelThreshold: options.pixelThreshold,
+      maxComparePixels: options.maxComparePixels,
+      timeoutMs: options.timeout,
+      maxRequests: options.maxRequests,
+      allowPrivateNetwork: options.allowPrivateNetwork
+    });
+    printResult({
+      ok: result.passed,
+      command: "evaluate",
+      app: result.app.name,
+      candidate: result.candidateBaseUrl,
+      score: result.score,
+      minimumScore: result.minimumScore,
+      passed: result.passed,
+      outDir,
+      report: join(outDir, "REPORT.md"),
+      correctionPlan: join(outDir, "CORRECTION_PLAN.md"),
+      lines: [
+        `${result.passed ? "PASS" : "CORRECTION REQUIRED"}: ${result.score.toFixed(2)} / 100`,
+        `Report: ${join(outDir, "REPORT.md")}`,
+        `Correction plan: ${join(outDir, "CORRECTION_PLAN.md")}`
+      ]
+    }, options.json);
+    if (!result.passed) process.exitCode = 3;
   });
 
 program.parseAsync(process.argv).catch((error) => {
