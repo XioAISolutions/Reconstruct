@@ -28,6 +28,24 @@ export async function assertJourneyLocation(page, candidateOrigin, allowPrivateN
   return current;
 }
 
+async function assertClickAllowed(locator, allowWriteActions) {
+  if (allowWriteActions) return;
+  const submitsForm = await locator.evaluate((element) => {
+    const form = element.closest("form");
+    if (!form) return false;
+    const tag = element.tagName.toLowerCase();
+    const type = (element.getAttribute("type") || (tag === "button" ? "submit" : "")).toLowerCase();
+    return (tag === "button" && type === "submit") || (tag === "input" && ["submit", "image"].includes(type));
+  });
+  if (submitsForm) throw new Error("Form submission requires the allow-write-actions option");
+}
+
+async function assertKeyAllowed(page, key, allowWriteActions) {
+  if (allowWriteActions || key !== "Enter") return;
+  const insideForm = await page.evaluate(() => Boolean(document.activeElement?.closest?.("form")));
+  if (insideForm) throw new Error("Pressing Enter inside a form requires the allow-write-actions option");
+}
+
 export async function executeJourneyStep(page, step, context) {
   const timeout = step.timeoutMs ?? context.timeoutMs;
   switch (step.action) {
@@ -39,6 +57,7 @@ export async function executeJourneyStep(page, step, context) {
     }
     case "click": {
       const locator = await uniqueLocator(page, step.target);
+      await assertClickAllowed(locator, context.allowWriteActions);
       await locator.click({ timeout });
       break;
     }
@@ -48,6 +67,7 @@ export async function executeJourneyStep(page, step, context) {
       break;
     }
     case "press":
+      await assertKeyAllowed(page, step.key, context.allowWriteActions);
       await page.keyboard.press(step.key);
       break;
     case "viewport":
