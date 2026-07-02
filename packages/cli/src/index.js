@@ -8,6 +8,8 @@ import { evaluateCandidate } from "./evaluate.js";
 import { EXPORT_TARGETS, exportAppSpec } from "./export.js";
 import { readJsonFile, UserInputError } from "./fs.js";
 import { verifyAppSpecProject } from "./integrity.js";
+import { runJourney } from "./journey.js";
+import { JourneyValidationError } from "./journey-schema.js";
 import { RECONSTRUCT_VERSION } from "./version.js";
 
 process.umask(0o077);
@@ -196,11 +198,52 @@ program.command("evaluate")
     if (!result.passed) process.exitCode = 3;
   });
 
+program.command("journey")
+  .alias("replay")
+  .description("Replay a declarative responsive and interaction journey against a candidate application")
+  .argument("<file>", "journey JSON file")
+  .requiredOption("-c, --candidate <url>", "candidate application base URL")
+  .option("-o, --out <directory>", "new journey output directory")
+  .option("--min-score <score>", "minimum passing score", numberOption(0, 100), 90)
+  .option("--timeout <milliseconds>", "timeout per journey step", integerOption(1_000, 120_000), 10_000)
+  .option("--max-requests <count>", "maximum browser requests across the journey", integerOption(1, 20_000), 1_000)
+  .option("--allow-private-network", "allow loopback and private-network candidate URLs", false)
+  .option("--json", "emit machine-readable output", false)
+  .action(async (file, options) => {
+    const filePath = resolve(file);
+    const outDir = resolve(options.out || join(dirname(filePath), "journey-output"));
+    const result = await runJourney(filePath, options.candidate, outDir, {
+      minScore: options.minScore,
+      timeoutMs: options.timeout,
+      maxRequests: options.maxRequests,
+      allowPrivateNetwork: options.allowPrivateNetwork
+    });
+    printResult({
+      ok: result.passed,
+      command: "journey",
+      name: result.name,
+      candidate: result.candidateBaseUrl,
+      score: result.score,
+      stepScore: result.stepScore,
+      accessibilityScore: result.accessibility.score,
+      passed: result.passed,
+      outDir,
+      resultFile: join(outDir, "journey.json"),
+      lines: [
+        `${result.passed ? "PASS" : "CORRECTION REQUIRED"}: ${result.score.toFixed(2)} / 100`,
+        `Steps: ${result.stats.passedSteps}/${result.stats.totalSteps} passed`,
+        `Artifacts: ${outDir}`
+      ]
+    }, options.json);
+    if (!result.passed) process.exitCode = 3;
+  });
+
 program.parseAsync(process.argv).catch((error) => {
+  const validationError = error instanceof AppSpecValidationError || error instanceof JourneyValidationError;
   const payload = {
     ok: false,
     error: error instanceof Error ? error.message : String(error),
-    ...(error instanceof AppSpecValidationError ? { issues: error.issues } : {})
+    ...(validationError ? { issues: error.issues } : {})
   };
   const jsonRequested = process.argv.includes("--json");
   if (jsonRequested) console.error(JSON.stringify(payload));
@@ -208,5 +251,5 @@ program.parseAsync(process.argv).catch((error) => {
     console.error(`reconstruct: ${payload.error}`);
     if (payload.issues) payload.issues.forEach((issue) => console.error(`  - ${issue}`));
   }
-  process.exitCode = error instanceof UserInputError || error instanceof AppSpecValidationError || error instanceof InvalidArgumentError ? 2 : 1;
+  process.exitCode = error instanceof UserInputError || validationError || error instanceof InvalidArgumentError ? 2 : 1;
 });
