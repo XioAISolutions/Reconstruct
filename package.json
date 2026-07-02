@@ -1,19 +1,23 @@
 {
   "name": "reconstruct",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Open-source application reconstruction engine for AI coding agents",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@9.15.4",
-  "scripts": {
-    "build": "pnpm -r build",
-    "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck",
-    "reconstruct": "pnpm --filter @reconstruct/cli exec reconstruct"
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": ">=20.19.0 <25",
+    "npm": ">=10"
   },
-  "devDependencies": {
-    "tsup": "^8.3.5",
-    "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
-  }
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:integration": "node --test packages/cli/integration/*.test.js",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "node scripts/repo-check.mjs",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run build",
+    "reconstruct": "node run.js"
+  },
+  "workspaces": ["packages/*"],
+  "type": "module"
 }

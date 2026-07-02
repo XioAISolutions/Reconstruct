@@ -1,4 +1,4 @@
-name: CI
+name: Browser integration
 
 on:
   push:
@@ -9,23 +9,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: browser-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Node ${{ matrix.node }}
+  chromium:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [20, 22, 24]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run verify
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:integration
