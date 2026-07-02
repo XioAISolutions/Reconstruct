@@ -8,5 +8,5 @@
     "test": "node --test test/*.test.js",
     "typecheck": "node --check src/index.js && node --check src/capture.js && node --check src/capture-page.js && node --check src/capture-utils.js && node --check src/crawl.js && node --check src/evaluate.js && node --check src/evaluate-browser.js && node --check src/evaluate-utils.js && node --check src/export.js && node --check src/security.js && node --check src/fs.js && node --check src/integrity.js && node --check src/journey.js && node --check src/journey-a11y.js && node --check src/journey-artifacts.js && node --check src/journey-report.js && node --check src/journey-runtime.js && node --check src/journey-schema.js && node --check src/version.js"
   },
-  "dependencies": {"@reconstruct/appspec": "0.3.0", "commander": "14.0.1", "playwright": "1.61.1"}
+  "dependencies": {"@reconstruct/appspec": "0.3.0", "commander": "15.0.0", "playwright": "1.61.1"}
 }
