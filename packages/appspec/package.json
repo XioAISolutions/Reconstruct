@@ -1,11 +1,8 @@
 {
   "name": "@reconstruct/appspec",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "exports": {
-    ".": "./src/index.js",
-    "./schema": "./schema/appspec.schema.json"
-  },
+  "exports": {".": "./src/index.js", "./schema": "./schema/appspec.schema.json"},
   "scripts": {
     "build": "node --check src/index.js",
     "test": "node --test test/*.test.js",

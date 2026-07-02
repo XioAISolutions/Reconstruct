@@ -1,12 +1,12 @@
 {
   "name": "@reconstruct/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "bin": {"reconstruct":"./src/index.js"},
+  "bin": {"reconstruct": "./src/index.js"},
   "scripts": {
-    "build": "node --check src/index.js && node --check src/capture.js && node --check src/export.js && node --check src/security.js && node --check src/fs.js && node --check src/integrity.js",
+    "build": "node --check src/index.js && node --check src/capture.js && node --check src/capture-page.js && node --check src/capture-utils.js && node --check src/crawl.js && node --check src/export.js && node --check src/security.js && node --check src/fs.js && node --check src/integrity.js",
     "test": "node --test test/*.test.js",
-    "typecheck": "node --check src/index.js && node --check src/capture.js && node --check src/export.js && node --check src/security.js && node --check src/fs.js && node --check src/integrity.js"
+    "typecheck": "node --check src/index.js && node --check src/capture.js && node --check src/capture-page.js && node --check src/capture-utils.js && node --check src/crawl.js && node --check src/export.js && node --check src/security.js && node --check src/fs.js && node --check src/integrity.js"
   },
-  "dependencies": {"@reconstruct/appspec":"0.2.0","commander":"14.0.1","playwright":"1.61.1"}
+  "dependencies": {"@reconstruct/appspec": "0.3.0", "commander": "14.0.1", "playwright": "1.61.1"}
 }

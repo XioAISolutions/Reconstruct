@@ -23,5 +23,23 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:integration
+      - name: Enable Chromium user-namespace sandbox
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sysctl -n kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium > playwright-install.log 2>&1 || { tail -n 120 playwright-install.log; exit 1; }
+      - name: Run integration tests
+        run: npm run test:integration > integration-test.log 2>&1
+      - name: Upload integration log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-log
+          path: integration-test.log
+          retention-days: 7
+          if-no-files-found: error

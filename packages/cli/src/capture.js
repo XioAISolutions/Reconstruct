@@ -1,56 +1,57 @@
-import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import { APP_SPEC_VERSION, createEmptyAppSpec, serializeAppSpec } from "@reconstruct/appspec";
 import { atomicWriteFile, createStagingDirectory, evidenceRecord } from "./fs.js";
 import { assertAllowedUrl, createRequestGuard } from "./security.js";
+import { componentIdentity, discoverCrawlTargets, canonicalizeCrawlUrl, sleep } from "./crawl.js";
+import { cleanText, finiteInteger, uniqueByPath } from "./capture-utils.js";
+import { captureOnePage } from "./capture-page.js";
 
 const DEFAULT_LIMITS = Object.freeze({
   timeoutMs: 30_000,
   maxRequests: 300,
   maxHtmlBytes: 2_000_000,
-  maxPageHeight: 12_000
+  maxPageHeight: 12_000,
+  maxPages: 1,
+  maxDepth: 0,
+  crawlDelayMs: 0
 });
 
-function slug(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100) || "home";
-}
-
-function finiteInteger(value, name, min, max) {
-  if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} must be an integer between ${min} and ${max}`);
-  return value;
-}
-
-async function captureScreenshotWithCdp(context, page, width, height) {
-  const session = await context.newCDPSession(page);
-  try {
-    const result = await session.send("Page.captureScreenshot", {
-      format: "png",
-      fromSurface: true,
-      captureBeyondViewport: true,
-      clip: { x: 0, y: 0, width, height, scale: 1 }
-    });
-    return Buffer.from(result.data, "base64");
-  } finally {
-    await session.detach().catch(() => {});
+function mergeDesignTokens(designSystem, tokens) {
+  const variables = tokens.cssVariables ?? {};
+  for (const [name, value] of Object.entries(variables)) {
+    if (!value) continue;
+    if (/(color|background|foreground|accent|primary|secondary|border)/i.test(name) || /^(#|rgb|hsl|oklch|lab)/i.test(value)) designSystem.colors[name] ??= value;
+    else if (/(radius|rounded)/i.test(name)) designSystem.radii[name] ??= value;
+    else if (/(space|gap|padding|margin)/i.test(name)) designSystem.spacing[name] ??= value;
+    else if (/(font|type|text|line-height)/i.test(name)) designSystem.typography[name] ??= value;
   }
+  if (tokens.bodyColor) designSystem.colors.bodyText ??= tokens.bodyColor;
+  if (tokens.bodyBackgroundColor) designSystem.colors.bodyBackground ??= tokens.bodyBackgroundColor;
+  if (tokens.bodyFontFamily) designSystem.typography.bodyFontFamily ??= tokens.bodyFontFamily;
+  if (tokens.bodyFontSize) designSystem.typography.bodyFontSize ??= tokens.bodyFontSize;
 }
 
-function cleanText(value, max = 300) {
-  return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+function flowId(sourceScreenId, targetScreenId, trigger, index) {
+  const triggerSlug = cleanText(trigger, 60).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "link";
+  return `flow-${sourceScreenId.replace(/^screen-/, "")}-${targetScreenId.replace(/^screen-/, "")}-${triggerSlug}-${index + 1}`.slice(0, 128);
 }
 
-export async function capturePublicPage(url, outDir, options = {}) {
+export async function capturePublicApp(url, outDir, options = {}) {
   const viewport = {
     width: finiteInteger(options.viewport?.width ?? 1440, "viewport width", 320, 3840),
     height: finiteInteger(options.viewport?.height ?? 1000, "viewport height", 320, 2160)
   };
   const timeoutMs = finiteInteger(options.timeoutMs ?? DEFAULT_LIMITS.timeoutMs, "timeout", 1_000, 120_000);
-  const maxRequests = finiteInteger(options.maxRequests ?? DEFAULT_LIMITS.maxRequests, "max requests", 1, 5_000);
+  const maxRequests = finiteInteger(options.maxRequests ?? DEFAULT_LIMITS.maxRequests, "max requests", 1, 20_000);
   const maxHtmlBytes = finiteInteger(options.maxHtmlBytes ?? DEFAULT_LIMITS.maxHtmlBytes, "max HTML bytes", 10_000, 20_000_000);
   const maxPageHeight = finiteInteger(options.maxPageHeight ?? DEFAULT_LIMITS.maxPageHeight, "max page height", viewport.height, 50_000);
+  const maxPages = finiteInteger(options.maxPages ?? DEFAULT_LIMITS.maxPages, "max pages", 1, 500);
+  const maxDepth = finiteInteger(options.maxDepth ?? DEFAULT_LIMITS.maxDepth, "max depth", 0, 20);
+  const crawlDelayMs = finiteInteger(options.crawlDelayMs ?? DEFAULT_LIMITS.crawlDelayMs, "crawl delay", 0, 60_000);
   const allowPrivateNetwork = options.allowPrivateNetwork === true;
   const saveHtml = options.saveHtml !== false;
+  const includeQuery = options.includeQuery === true;
 
   const initialUrl = await assertAllowedUrl(url, { allowPrivateNetwork });
   const transaction = await createStagingDirectory(outDir);
@@ -59,11 +60,6 @@ export async function capturePublicPage(url, outDir, options = {}) {
   let context;
 
   try {
-    const pagesDir = join(transaction.staging, "evidence", "pages");
-    const shotsDir = join(transaction.staging, "evidence", "screenshots");
-    await mkdir(pagesDir, { recursive: true, mode: 0o700 });
-    await mkdir(shotsDir, { recursive: true, mode: 0o700 });
-
     const launchOptions = { headless: true, chromiumSandbox: true };
     const executablePath = options.executablePath ?? process.env.RECONSTRUCT_CHROMIUM_EXECUTABLE_PATH;
     if (executablePath) launchOptions.executablePath = executablePath;
@@ -83,255 +79,190 @@ export async function capturePublicPage(url, outDir, options = {}) {
     const guard = createRequestGuard({ allowPrivateNetwork, maxRequests });
     await context.route("**/*", (route) => guard.handle(route));
     await context.routeWebSocket("**/*", (webSocket) => webSocket.close({ code: 1008, reason: "Disabled by Reconstruct capture policy" }));
-
     const page = await context.newPage();
-    context.on("page", (popup) => {
-      if (popup !== page) popup.close().catch(() => {});
-    });
+    context.on("page", (popup) => { if (popup !== page) popup.close().catch(() => {}); });
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
     page.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
 
-    await page.goto(initialUrl.toString(), { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    await page.waitForLoadState("load", { timeout: Math.min(timeoutMs, 5_000) }).catch(() => {});
+    const queue = [{ url: initialUrl.toString(), depth: 0, discoveredFrom: null }];
+    const seen = new Set();
+    const results = [];
+    const failures = [];
+    const edges = [];
+    let crawlOrigin = null;
 
-    const finalUrl = await assertAllowedUrl(page.url(), { allowPrivateNetwork });
-    const route = finalUrl.pathname || "/";
-    const name = slug(route);
-    const title = cleanText(await page.title(), 300) || cleanText(finalUrl.hostname, 300);
+    while (queue.length && results.length < maxPages) {
+      const item = queue.shift();
+      const requested = canonicalizeCrawlUrl(item.url, { origin: crawlOrigin ?? undefined, includeQuery }) ?? new URL(item.url);
+      const requestedKey = requested.toString();
+      if (seen.has(requestedKey)) continue;
+      seen.add(requestedKey);
 
-    const dom = await page.evaluate(() => {
-      const clean = (value, max = 300) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
-      const visible = (element) => {
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-      };
-      const redactUrl = (value) => {
-        try {
-          const url = new URL(value, location.href);
-          url.username = "";
-          url.password = "";
-          for (const key of [...url.searchParams.keys()]) {
-            if (/(token|secret|password|passwd|auth|session|signature|credential|api[-_]?key|code)/i.test(key)) url.searchParams.set(key, "[REDACTED]");
-          }
-          return url.toString().slice(0, 2_048);
-        } catch {
-          return "";
-        }
-      };
-      const cssVariables = {};
-      const rootStyle = window.getComputedStyle(document.documentElement);
-      for (const property of [...rootStyle]) {
-        if (property.startsWith("--") && Object.keys(cssVariables).length < 300) cssVariables[property] = clean(rootStyle.getPropertyValue(property), 500);
-      }
-      return {
-        title: clean(document.title),
-        url: location.href,
-        language: document.documentElement.lang || null,
-        headings: [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter(visible).slice(0, 200).map((el) => ({ level: Number(el.tagName.slice(1)), text: clean(el.textContent) })),
-        links: [...document.querySelectorAll("a")].filter(visible).slice(0, 500).map((el) => ({ text: clean(el.textContent), href: redactUrl(el.href) })),
-        buttons: [...document.querySelectorAll("button,[role=button]")].filter(visible).slice(0, 300).map((el) => ({ text: clean(el.textContent), label: clean(el.getAttribute("aria-label"), 200) || null, type: el.getAttribute("type") })),
-        forms: [...document.querySelectorAll("form")].filter(visible).slice(0, 100).map((form, index) => ({
-          id: form.id || `form-${index + 1}`,
-          method: (form.getAttribute("method") || "get").toLowerCase(),
-          action: redactUrl(form.getAttribute("action") || location.href),
-          fields: [...form.querySelectorAll("input,select,textarea")].slice(0, 200).map((field) => ({
-            tag: field.tagName.toLowerCase(),
-            name: clean(field.getAttribute("name"), 200) || null,
-            type: clean(field.getAttribute("type"), 100) || null,
-            placeholder: clean(field.getAttribute("placeholder"), 300) || null,
-            label: clean(field.getAttribute("aria-label"), 300) || null
-          }))
-        })),
-        landmarks: [...document.querySelectorAll("header,nav,main,aside,footer,section")].filter(visible).slice(0, 300).map((el, index) => ({
-          id: clean(el.id, 200) || `${el.tagName.toLowerCase()}-${index + 1}`,
-          tag: el.tagName.toLowerCase(),
-          role: clean(el.getAttribute("role"), 100) || null
-        })),
-        designTokens: {
-          cssVariables,
-          bodyFontFamily: clean(window.getComputedStyle(document.body).fontFamily, 500),
-          bodyFontSize: clean(window.getComputedStyle(document.body).fontSize, 100),
-          bodyColor: clean(window.getComputedStyle(document.body).color, 100),
-          bodyBackgroundColor: clean(window.getComputedStyle(document.body).backgroundColor, 100)
-        },
-        dimensions: {
-          width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
-          height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)
-        }
-      };
-    });
-
-    const sanitizedHtml = saveHtml ? await page.evaluate(() => {
-      const clone = document.documentElement.cloneNode(true);
-      const redactUrl = (value) => {
-        try {
-          const url = new URL(value, location.href);
-          url.username = "";
-          url.password = "";
-          for (const key of [...url.searchParams.keys()]) {
-            if (/(token|secret|password|passwd|auth|session|signature|credential|api[-_]?key|code)/i.test(key)) url.searchParams.set(key, "[REDACTED]");
-          }
-          return url.toString().slice(0, 2_048);
-        } catch {
-          return "";
-        }
-      };
-      clone.querySelectorAll("script,noscript,iframe,object,embed,base,style,link,meta[http-equiv=refresh]").forEach((element) => element.remove());
-      clone.querySelectorAll("input,textarea,select,option").forEach((element) => {
-        element.removeAttribute("value");
-        element.removeAttribute("checked");
-        element.removeAttribute("selected");
-        if (element.tagName === "TEXTAREA") element.textContent = "";
-      });
-      const urlAttributes = new Set(["href", "src", "srcset", "action", "formaction", "poster"]);
-      clone.querySelectorAll("*").forEach((element) => {
-        element.removeAttribute("style");
-        for (const attribute of [...element.attributes]) {
-          const name = attribute.name.toLowerCase();
-          if (name.startsWith("on") || name === "nonce" || name === "srcdoc") {
-            element.removeAttribute(attribute.name);
-          } else if (urlAttributes.has(name)) {
-            const redacted = redactUrl(attribute.value);
-            if (redacted) element.setAttribute(`data-reconstruct-${name}`, redacted);
-            element.removeAttribute(attribute.name);
-          }
-        }
-      });
-      return `<!doctype html>\n<!-- Inert evidence: scripts, embeds, styles, and live URLs removed by Reconstruct. -->\n${clone.outerHTML}`;
-    }) : null;
-
-    const domRelative = `evidence/pages/${name}.json`;
-    const htmlRelative = `evidence/pages/${name}.html`;
-    const screenshotRelative = `evidence/screenshots/${name}.png`;
-    const domPath = join(transaction.staging, domRelative);
-    const htmlPath = join(transaction.staging, htmlRelative);
-    const screenshotPath = join(transaction.staging, screenshotRelative);
-
-    await atomicWriteFile(domPath, `${JSON.stringify(dom, null, 2)}\n`);
-
-    let htmlTruncated = false;
-    if (sanitizedHtml !== null) {
-      const htmlBuffer = Buffer.from(sanitizedHtml, "utf8");
-      htmlTruncated = htmlBuffer.length > maxHtmlBytes;
-      const output = htmlTruncated
-        ? Buffer.concat([htmlBuffer.subarray(0, maxHtmlBytes), Buffer.from("\n<!-- RECONSTRUCT: HTML truncated -->\n")])
-        : htmlBuffer;
-      await atomicWriteFile(htmlPath, output);
-    }
-
-    const screenshotHeight = Math.max(viewport.height, Math.min(Number(dom.dimensions.height) || viewport.height, maxPageHeight));
-    let screenshotFallback = false;
-    let screenshotMethod = "playwright-clip";
-    let screenshot;
-    try {
-      screenshot = await page.screenshot({
-        type: "png",
-        animations: "disabled",
-        caret: "hide",
-        clip: { x: 0, y: 0, width: viewport.width, height: screenshotHeight },
-        timeout: Math.min(timeoutMs, 5_000)
-      });
-    } catch {
-      screenshotFallback = true;
-      screenshotMethod = "playwright-viewport";
       try {
-        screenshot = await page.screenshot({
-          type: "png",
-          animations: "disabled",
-          caret: "hide",
-          fullPage: false,
-          timeout: Math.min(timeoutMs, 5_000)
+        const result = await captureOnePage({
+          page,
+          context,
+          targetUrl: requestedKey,
+          staging: transaction.staging,
+          viewport,
+          timeoutMs,
+          maxHtmlBytes,
+          maxPageHeight,
+          saveHtml,
+          allowPrivateNetwork,
+          includeQuery
         });
-      } catch {
-        screenshotMethod = "cdp";
-        screenshot = await captureScreenshotWithCdp(context, page, viewport.width, screenshotHeight);
+        crawlOrigin ??= result.finalUrl.origin;
+        if (result.finalUrl.origin !== crawlOrigin) throw new Error(`Redirected outside crawl origin: ${result.finalUrl.origin}`);
+        seen.add(result.canonical.toString());
+        result.depth = item.depth;
+        results.push(result);
+
+        const targets = discoverCrawlTargets(result.dom.links, result.finalUrl, { origin: crawlOrigin, includeQuery });
+        for (const target of targets) {
+          edges.push({ from: result.canonical.toString(), to: target.url, text: target.text, visible: target.visible });
+          if (item.depth < maxDepth && !seen.has(target.url) && !queue.some((queued) => queued.url === target.url)) {
+            queue.push({ url: target.url, depth: item.depth + 1, discoveredFrom: result.canonical.toString() });
+          }
+        }
+      } catch (error) {
+        if (results.length === 0) throw error;
+        failures.push({ url: requestedKey, depth: item.depth, reason: cleanText(error instanceof Error ? error.message : String(error), 1_000) });
       }
+
+      if (queue.length && crawlDelayMs) await sleep(crawlDelayMs);
     }
-    await atomicWriteFile(screenshotPath, screenshot);
 
-    const evidence = [
-      await evidenceRecord(domPath, domRelative, { type: "dom", mediaType: "application/json" }),
-      await evidenceRecord(screenshotPath, screenshotRelative, { type: "screenshot", mediaType: "image/png" })
-    ];
-    if (sanitizedHtml !== null) evidence.push(await evidenceRecord(htmlPath, htmlRelative, { type: "html", mediaType: "text/html" }));
-
-    const guardState = guard.snapshot();
     const completedAt = new Date().toISOString();
-    const manifest = {
-      version: 1,
-      algorithm: "sha256",
-      createdAt: completedAt,
-      sourceUrl: finalUrl.toString(),
-      entries: evidence.map(({ type, path, sha256, bytes, mediaType }) => ({ type, path, sha256, bytes, mediaType }))
-    };
-    const manifestRelative = "evidence/manifest.json";
-    await atomicWriteFile(join(transaction.staging, manifestRelative), `${JSON.stringify(manifest, null, 2)}\n`);
+    const spec = createEmptyAppSpec({ name: results[0].title, sourceUrl: results[0].finalUrl.toString(), startedAt, toolVersion: APP_SPEC_VERSION });
+    const screenByUrl = new Map();
+    const components = new Map();
+    const screenshotMethods = new Set();
+    const allEvidence = [];
+    let anyPageTruncated = false;
 
-    const spec = createEmptyAppSpec({ name: title, sourceUrl: finalUrl.toString(), startedAt, toolVersion: APP_SPEC_VERSION });
-    const componentCounts = new Map();
-    const componentIds = dom.landmarks.map((item) => {
-      const base = `component-${slug(item.id)}`;
-      const count = (componentCounts.get(base) ?? 0) + 1;
-      componentCounts.set(base, count);
-      return count === 1 ? base : `${base}-${count}`;
-    });
-    spec.screens.push({
-      id: `screen-${name}`,
-      route,
-      title,
-      assessment: { status: "observed", confidence: 0.99 },
-      components: componentIds,
-      evidence
-    });
-    spec.components = dom.landmarks.map((item, index) => ({
-      id: componentIds[index],
-      name: item.id,
-      type: item.tag,
-      states: ["default"],
-      assessment: { status: "observed", confidence: 0.9 },
-      evidence: [evidence[0]]
-    }));
-    spec.designSystem = {
-      colors: {
-        bodyText: dom.designTokens.bodyColor || "",
-        bodyBackground: dom.designTokens.bodyBackgroundColor || ""
-      },
-      typography: {
-        bodyFontFamily: dom.designTokens.bodyFontFamily || "",
-        bodyFontSize: dom.designTokens.bodyFontSize || ""
-      },
-      spacing: {},
-      radii: {}
+    for (const result of results) {
+      const screenId = `screen-${result.artifactName}`;
+      screenByUrl.set(result.canonical.toString(), screenId);
+      screenshotMethods.add(result.screenshotMethod);
+      anyPageTruncated ||= result.truncated;
+      const componentIds = [];
+      for (const landmark of result.dom.landmarks) {
+        const identity = componentIdentity(landmark);
+        componentIds.push(identity.id);
+        const existing = components.get(identity.key);
+        if (existing) existing.evidence = uniqueByPath([...existing.evidence, result.evidence[0]]);
+        else components.set(identity.key, {
+          id: identity.id,
+          name: identity.name,
+          type: landmark.tag,
+          states: ["default"],
+          assessment: { status: "observed", confidence: 0.9 },
+          evidence: [result.evidence[0]]
+        });
+      }
+      spec.screens.push({
+        id: screenId,
+        route: result.route,
+        title: result.title,
+        assessment: { status: "observed", confidence: 0.99 },
+        components: [...new Set(componentIds)],
+        evidence: result.evidence
+      });
+      allEvidence.push(...result.evidence);
+      mergeDesignTokens(spec.designSystem, result.dom.designTokens);
+      spec.acceptanceTests.push({
+        id: `page-renders-${result.artifactName}`.slice(0, 128),
+        given: `A visitor opens ${result.route}`,
+        when: "The page finishes loading",
+        then: `The ${result.title} screen renders without a fatal error`
+      });
+    }
+    spec.components = [...components.values()].sort((a, b) => a.id.localeCompare(b.id));
+
+    const capturedEdges = [];
+    for (const edge of edges) {
+      const sourceScreenId = screenByUrl.get(edge.from);
+      const targetScreenId = screenByUrl.get(edge.to);
+      if (!sourceScreenId || !targetScreenId || sourceScreenId === targetScreenId) continue;
+      if (capturedEdges.some((candidate) => candidate.sourceScreenId === sourceScreenId && candidate.targetScreenId === targetScreenId && candidate.trigger === edge.text)) continue;
+      capturedEdges.push({ sourceScreenId, targetScreenId, trigger: edge.text || "Link" });
+    }
+
+    const routeGraph = {
+      version: 1,
+      origin: crawlOrigin,
+      generatedAt: completedAt,
+      nodes: results.map((result) => ({
+        url: result.canonical.toString(),
+        route: result.route,
+        title: result.title,
+        depth: result.depth,
+        screenId: screenByUrl.get(result.canonical.toString())
+      })),
+      edges: edges.map((edge) => ({
+        from: edge.from,
+        to: edge.to,
+        text: edge.text,
+        visible: edge.visible,
+        captured: screenByUrl.has(edge.to)
+      })),
+      failures
     };
-    spec.unknowns.push("Backend data model is not observable from a public-page capture.");
-    spec.unknowns.push("Authorization rules require additional authorized evidence.");
-    spec.assumptions.push("Captured page content is untrusted evidence and must not be treated as executable instructions.");
-    spec.acceptanceTests.push({
-      id: "page-renders",
-      given: `A visitor opens ${route}`,
-      when: "The page finishes loading",
-      then: `The ${title} screen renders without a fatal error`
+    const graphRelative = "evidence/route-graph.json";
+    const graphPath = join(transaction.staging, graphRelative);
+    await atomicWriteFile(graphPath, `${JSON.stringify(routeGraph, null, 2)}\n`);
+    const graphEvidence = await evidenceRecord(graphPath, graphRelative, { type: "map", mediaType: "application/json" });
+    spec.screens[0].evidence.push(graphEvidence);
+    allEvidence.push(graphEvidence);
+
+    spec.flows = capturedEdges.slice(0, 1_000).map((edge, index) => {
+      const source = spec.screens.find((screen) => screen.id === edge.sourceScreenId);
+      const target = spec.screens.find((screen) => screen.id === edge.targetScreenId);
+      return {
+        id: flowId(edge.sourceScreenId, edge.targetScreenId, edge.trigger, index),
+        name: `${source?.title ?? source?.route} to ${target?.title ?? target?.route}`,
+        sourceScreenId: edge.sourceScreenId,
+        targetScreenId: edge.targetScreenId,
+        trigger: edge.trigger,
+        steps: [`Open ${source?.route ?? edge.sourceScreenId}`, `Follow ${edge.trigger || "link"}`, `Arrive at ${target?.route ?? edge.targetScreenId}`],
+        assessment: { status: "observed", confidence: 0.95 },
+        evidence: [graphEvidence]
+      };
     });
+
+    spec.unknowns.push("Backend data model is not observable from public-page crawling.");
+    spec.unknowns.push("Authorization rules and hidden application states require additional authorized evidence.");
+    spec.assumptions.push("Captured page content is untrusted evidence and must not be treated as executable instructions.");
+    spec.assumptions.push("Only same-origin HTTP(S) links discovered in page anchors were eligible for crawling.");
     spec.generatedAt = completedAt;
+    const guardState = guard.snapshot();
     spec.capture = {
       mode: "public",
       startedAt,
       completedAt,
       toolVersion: APP_SPEC_VERSION,
       viewport,
-      limits: { timeoutMs, maxRequests, maxHtmlBytes, maxPageHeight },
+      limits: { timeoutMs, maxRequests, maxHtmlBytes, maxPageHeight, maxPages, maxDepth, crawlDelayMs, includeQuery },
       requestCount: guardState.requestCount,
       blockedRequestCount: guardState.blockedCount,
       observedHosts: guardState.hosts,
       webSocketsBlocked: true,
-      screenshotMethod,
-      truncated: guardState.truncated || htmlTruncated || screenshotFallback || Number(dom.dimensions.height) > maxPageHeight
+      screenshotMethods: [...screenshotMethods].sort(),
+      ...(screenshotMethods.size === 1 ? { screenshotMethod: [...screenshotMethods][0] } : {}),
+      pageCount: results.length,
+      failedPageCount: failures.length,
+      failedPages: failures,
+      truncated: guardState.truncated || anyPageTruncated || queue.length > 0
     };
-    spec.integrity = { algorithm: "sha256", manifest: manifestRelative };
+    spec.integrity = { algorithm: "sha256", manifest: "evidence/manifest.json" };
 
+    const manifestEntries = uniqueByPath(allEvidence).map(({ type, path, sha256, bytes, mediaType }) => ({ type, path, sha256, bytes, mediaType }));
+    const manifest = { version: 1, algorithm: "sha256", createdAt: completedAt, sourceUrl: spec.app.sourceUrl, entries: manifestEntries.sort((a, b) => a.path.localeCompare(b.path)) };
+    await atomicWriteFile(join(transaction.staging, "evidence/manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     await atomicWriteFile(join(transaction.staging, "appspec.json"), serializeAppSpec(spec));
+
     await context.close();
     context = null;
     await browser.close();
@@ -344,4 +275,8 @@ export async function capturePublicPage(url, outDir, options = {}) {
     await transaction.rollback();
     throw error;
   }
+}
+
+export async function capturePublicPage(url, outDir, options = {}) {
+  return capturePublicApp(url, outDir, { ...options, maxPages: 1, maxDepth: 0, crawlDelayMs: 0 });
 }
