@@ -20,9 +20,9 @@ Reconstruct captures observable product evidence, converts it into a neutral `Ap
 pnpm install
 pnpm exec playwright install chromium
 pnpm build
-pnpm reconstruct capture https://example.com --out ./example-reconstruction
-pnpm reconstruct validate ./example-reconstruction/appspec.json
-pnpm reconstruct export ./example-reconstruction/appspec.json --target cursor
+node run.js capture https://example.com --out ./example-reconstruction
+node run.js validate ./example-reconstruction/appspec.json
+node run.js export ./example-reconstruction/appspec.json --target cursor
 ```
 
 ## Repository layout
@@ -30,9 +30,7 @@ pnpm reconstruct export ./example-reconstruction/appspec.json --target cursor
 ```text
 packages/
 ├── appspec/    # schema, types, and validation
-├── capture/    # browser evidence collection
-├── exporters/  # coding-agent build packages
-└── cli/        # reconstruct command
+└── cli/        # capture, export, and command-line interface
 ```
 
 ## Responsible use
