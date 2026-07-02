@@ -1,0 +1,1 @@
+export const JOURNEY_REPORT_VERSION = 1;
