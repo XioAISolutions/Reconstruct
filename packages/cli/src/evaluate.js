@@ -5,7 +5,7 @@ import { validateAppSpec } from "@reconstruct/appspec";
 import { atomicWriteFile, createStagingDirectory, readJsonFile, safeJoin, sha256 } from "./fs.js";
 import { verifyAppSpecProject } from "./integrity.js";
 import { assertAllowedUrl, createRequestGuard } from "./security.js";
-import { captureScreenshotWithCdp, extractPageData } from "./capture-page.js";
+import { captureScreenshotWithCdp, extractPageData } from "./evaluate-browser.js";
 import { compareFlows, compareStructure, combineRouteScores, pngDimensions, roundScore, summarizeFindings } from "./evaluate-utils.js";
 import { RECONSTRUCT_VERSION } from "./version.js";
 
@@ -200,7 +200,8 @@ export async function evaluateCandidate(appSpecFile, candidateBaseUrl, outDir, o
     await context.route("**/*", (route) => guard.handle(route));
     await context.routeWebSocket("**/*", (webSocket) => webSocket.close({ code: 1008, reason: "Disabled by Reconstruct evaluation policy" }));
     const page = await context.newPage();
-    context.on("page", (popup) => { if (popup !== page) popup.close().catch(() => {}); });
+    const comparisonPage = await context.newPage();
+    context.on("page", (popup) => { if (popup !== page && popup !== comparisonPage) popup.close().catch(() => {}); });
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
     page.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
@@ -239,7 +240,7 @@ export async function evaluateCandidate(appSpecFile, candidateBaseUrl, outDir, o
         if (finalUrl.origin !== candidateBase.origin) throw new Error(`Route redirected outside candidate origin to ${finalUrl.origin}`);
         const candidateDomData = await extractPageData(page);
         const screenshotBuffer = await candidateScreenshot(context, page, dimensions.width, dimensions.height, timeoutMs);
-        const visual = await comparePngs(page, referenceScreenshotBuffer, screenshotBuffer, { pixelThreshold, maxComparePixels });
+        const visual = await comparePngs(comparisonPage, referenceScreenshotBuffer, screenshotBuffer, { pixelThreshold, maxComparePixels });
         const structure = compareStructure(referenceDomData, candidateDomData);
         const sourceFlows = spec.flows.filter((flow) => flow.sourceScreenId === screen.id);
         const behavior = compareFlows(sourceFlows, candidateDomData, candidateBase.origin, screenById);
@@ -296,7 +297,7 @@ export async function evaluateCandidate(appSpecFile, candidateBaseUrl, outDir, o
       version: 1,
       algorithm: "sha256",
       createdAt: result.generatedAt,
-      sourceAppSpec: appSpecPath,
+      sourceAppSpecSha256: sha256(await readFile(appSpecPath)),
       candidateBaseUrl: result.candidateBaseUrl,
       entries: [...tracked].sort((a, b) => a.path.localeCompare(b.path))
     };
