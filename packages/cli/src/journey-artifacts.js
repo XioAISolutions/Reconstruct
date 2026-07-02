@@ -13,7 +13,7 @@ export function createJourneyArtifactWriter({ page, candidateOrigin, allowPrivat
       animations: "disabled",
       caret: "hide",
       fullPage: false,
-      mask: page.locator("input,textarea,select"),
+      mask: [page.locator("input,textarea,select")],
       timeout: Math.min(timeoutMs, 10_000)
     });
     const dom = await extractPageData(page);
