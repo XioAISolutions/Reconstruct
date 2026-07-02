@@ -2,7 +2,32 @@
 
 All notable changes to this project are documented here.
 
-## 0.4.0 - Unreleased
+## 0.5.0 - Unreleased
+
+### Added
+
+- `journey` command with `replay` alias
+- declarative responsive and interaction scenarios
+- semantic locators by role, accessible name, label, placeholder, text, or test ID
+- allowlisted click, fill, keyboard, viewport, route, text, visibility, checkpoint, and audit actions
+- responsive viewport transitions and keyboard-state verification
+- bounded accessibility scoring at checkpoints and explicit audit steps
+- masked checkpoint screenshots and structured DOM evidence
+- `journey.json`, `accessibility.json`, `JOURNEY_REPORT.md`, and `JOURNEY_CORRECTIONS.md`
+- content-addressed journey manifests
+- journey unit tests and real Chromium passing/failing regression coverage
+
+### Security
+
+- arbitrary JavaScript, CSS selectors, XPath, uploads, and page-provided instructions are not supported by journey files
+- candidate location is revalidated after every completed action
+- cross-origin movement is rejected
+- form-submit controls and Enter inside forms are blocked by default
+- filled values are redacted in stored results
+- form fields are masked in checkpoint screenshots
+- browser request ceilings, Chromium sandboxing, TLS verification, CSP enforcement, popup blocking, dialog dismissal, download blocking, service-worker blocking, and WebSocket restrictions remain active
+
+## 0.4.0 - 2026-07-02
 
 ### Added
 
