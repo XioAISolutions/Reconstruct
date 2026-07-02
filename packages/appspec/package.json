@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "exports": "./src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "node --check src/index.js",
     "test": "node --test",
