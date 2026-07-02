@@ -23,6 +23,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Enable Chromium user-namespace sandbox
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sysctl -n kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
       - name: Install Chromium
         run: npx playwright install --with-deps chromium > playwright-install.log 2>&1 || { tail -n 120 playwright-install.log; exit 1; }
       - name: Run integration tests
