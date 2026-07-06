@@ -37,7 +37,7 @@ jobs:
         run: npm run test:integration > integration-test.log 2>&1
       - name: Upload integration log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-log
           path: integration-test.log
